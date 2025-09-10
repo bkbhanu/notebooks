@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Registration Data World Map</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <style>
+        #map { 
+            height: 600px; 
+            width: 100%;
+        }
+        .info {
+            padding: 6px 8px;
+            font: 14px/16px Arial, Helvetica, sans-serif;
+            background: white;
+            background: rgba(255,255,255,0.8);
+            box-shadow: 0 0 15px rgba(0,0,0,0.2);
+            border-radius: 5px;
+        }
+        .legend {
+            line-height: 18px;
+            color: #555;
+        }
+        .legend i {
+            width: 18px;
+            height: 18px;
+            float: left;
+            margin-right: 8px;
+            opacity: 0.7;
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+        }
+    </style>
+</head>
+<body>
+    <div class="loading" id="loading">Loading registration data...</div>
+    <div id="map" style="display: none;"></div>
+    
+    <!-- Leaflet JavaScript -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <script>
+        // Initialize the map
+        var map = L.map('map').setView([20, 0], 2);
+        
+        // Add tile layer
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+        
+        // Registration data storage
+        var registrationData = {};
+        var maxRegistrations = 0;
+        
+        // Replace this URL with your actual CSV URL
+        const CSV_URL = 'https://github.com/bkbhanu/notebooks/blob/main/registration.csv'; // Update this with your CSV URL
+        
+        // Load and parse CSV data from URL
+        function loadRegistrationData() {
+            fetch(CSV_URL)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.text();
+                })
+                .then(data => {
+                    parseCSVData(data);
+                    loadWorldMap();
+                })
+                .catch(error => {
+                    console.error('Error loading CSV data:', error);
+                    document.getElementById('loading').innerHTML = 'Error loading registration data. Please check the CSV URL.';
+                });
+        }
+        
+        // Parse CSV data
+        function parseCSVData(csvText) {
+            const lines = csvText.trim().split('\n');
+            const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+            
+            // Find column indices (flexible column names)
+            const countryIdx = headers.findIndex(h => h.includes('country') || h.includes('nation'));
+            const maleIdx = headers.findIndex(h => h.includes('male') && !h.includes('female'));
+            const femaleIdx = headers.findIndex(h => h.includes('female'));
+            const totalIdx = headers.findIndex(h => h.includes('total'));
+            
+            console.log('CSV Headers:', headers);
+            console.log('Column indices - Country:', countryIdx, 'Male:', maleIdx, 'Female:', femaleIdx, 'Total:', totalIdx);
+            
+            for (let i = 1; i < lines.length; i++) {
+                const values = lines[i].split(',').map(v => v.trim());
+                
+                if (values.length >= 4 && values[countryIdx]) {
+                    const country = values[countryIdx].replace(/"/g, ''); // Remove quotes
+                    const male = parseInt(values[maleIdx]) || 0;
+                    const female = parseInt(values[femaleIdx]) || 0;
+                    const total = parseInt(values[totalIdx]) || (male + female);
+                    
+                    registrationData[country] = {
+                        male: male,
+                        female: female,
+                        total: total
+                    };
+                    
+                    // Track maximum for color scaling
+                    if (total > maxRegistrations) {
+                        maxRegistrations = total;
+                    }
+                }
+            }
+            
+            console.log('Loaded registration data for', Object.keys(registrationData).length, 'countries');
+            console.log('Max registrations:', maxRegistrations);
+        }
+        
+        // Load world countries GeoJSON
+        function loadWorldMap() {
+            fetch('https://raw.githubusercontent.com/holtzy/D3-graph-gallery/master/DATA/world.geojson')
+                .then(response => response.json())
+                .then(data => {
+                    // Hide loading message, show map
+                    document.getElementById('loading').style.display = 'none';
+                    document.getElementById('map').style.display = 'block';
+                    
+                    L.geoJSON(data, {
+                        style: styleFeature,
+                        onEachFeature: onEachFeature
+                    }).addTo(map);
+                    
+                    addLegend();
+                    addInfoControl();
+                })
+                .catch(error => {
+                    console.error('Error loading world map:', error);
+                    document.getElementById('loading').innerHTML = 'Error loading world map data.';
+                });
+        }
+        
+        // Style function for countries based on registration data
+        function styleFeature(feature) {
+            const countryName = feature.properties.NAME;
+            const countryData = findCountryData(countryName);
+            
+            return {
+                fillColor: getColor(countryData ? countryData.total : 0),
+                weight: 1,
+                opacity: 1,
+                color: 'white',
+                dashArray: '2',
+                fillOpacity: 0.8
+            };
+        }
+        
+        // Find country data with flexible matching
+        function findCountryData(countryName) {
+            // Direct match
+            if (registrationData[countryName]) {
+                return registrationData[countryName];
+            }
+            
+            // Try common variations
+            const variations = [
+                countryName.replace(' ', ''),
+                countryName.replace('United States', 'USA'),
+                countryName.replace('United Kingdom', 'UK'),
+                countryName.replace('Russian Federation', 'Russia')
+            ];
+            
+            for (let variation of variations) {
+                if (registrationData[variation]) {
+                    return registrationData[variation];
+                }
+            }
+            
+            // Case-insensitive search
+            const keys = Object.keys(registrationData);
+            const match = keys.find(key => 
+                key.toLowerCase() === countryName.toLowerCase()
+            );
+            
+            return match ? registrationData[match] : null;
+        }
+        
+        // Color scale based on registration count (adjusted for smaller numbers)
+        function getColor(total) {
+            if (total === 0) return '#f0f0f0'; // Light gray for no registrations
+            
+            const percentage = total / maxRegistrations;
+            
+            return percentage > 0.8 ? '#800026' :
+                   percentage > 0.6 ? '#BD0026' :
+                   percentage > 0.4 ? '#E31A1C' :
+                   percentage > 0.2 ? '#FC4E2A' :
+                   percentage > 0.1 ? '#FD8D3C' :
+                   percentage > 0.05 ? '#FEB24C' :
+                   percentage > 0.01 ? '#FED976' :
+                                       '#FFEDA0';
+        }
+        
+        // Add interactivity to each country
+        function onEachFeature(feature, layer) {
+            const countryName = feature.properties.NAME;
+            const countryData = findCountryData(countryName);
+            
+            let popupContent = `<strong>${countryName}</strong><br/>`;
+            
+            if (countryData) {
+                const malePercent = countryData.total > 0 ? 
+                    ((countryData.male / countryData.total) * 100).toFixed(1) : 0;
+                const femalePercent = countryData.total > 0 ? 
+                    ((countryData.female / countryData.total) * 100).toFixed(1) : 0;
+                
+                popupContent += `
+                    <strong>Registrations:</strong><br/>
+                    Male: ${countryData.male.toLocaleString()} (${malePercent}%)<br/>
+                    Female: ${countryData.female.toLocaleString()} (${femalePercent}%)<br/>
+                    <strong>Total: ${countryData.total.toLocaleString()}</strong>
+                `;
+            } else {
+                popupContent += '<em>No registration data available</em>';
+            }
+            
+            layer.bindPopup(popupContent);
+            
+            layer.on({
+                mouseover: highlightFeature,
+                mouseout: resetHighlight
+            });
+        }
+        
+        function highlightFeature(e) {
+            var layer = e.target;
+            layer.setStyle({
+                weight: 3,
+                color: '#666',
+                dashArray: '',
+                fillOpacity: 0.9
+            });
+        }
+        
+        function resetHighlight(e) {
+            var layer = e.target;
+            layer.setStyle({
+                weight: 1,
+                color: 'white',
+                dashArray: '2',
+                fillOpacity: 0.8
+            });
+        }
+        
+        // Add legend
+        function addLegend() {
+            var legend = L.control({position: 'bottomright'});
+            legend.onAdd = function (map) {
+                var div = L.DomUtil.create('div', 'info legend');
+                
+                const thresholds = [
+                    Math.ceil(maxRegistrations * 0.8),
+                    Math.ceil(maxRegistrations * 0.6),
+                    Math.ceil(maxRegistrations * 0.4),
+                    Math.ceil(maxRegistrations * 0.2),
+                    Math.ceil(maxRegistrations * 0.1),
+                    Math.ceil(maxRegistrations * 0.05),
+                    Math.ceil(maxRegistrations * 0.01),
+                    0
+                ].reverse();
+                
+                div.innerHTML = '<strong>Registrations</strong><br>';
+                
+                for (var i = 0; i < thresholds.length - 1; i++) {
+                    div.innerHTML +=
+                        '<i style="background:' + getColor(thresholds[i] + 1) + '"></i> ' +
+                        thresholds[i].toLocaleString() + '&ndash;' + thresholds[i + 1].toLocaleString() + '<br>';
+                }
+                
+                div.innerHTML += '<i style="background:#f0f0f0"></i> No data<br>';
+                
+                return div;
+            };
+            legend.addTo(map);
+        }
+        
+        // Add info control
+        function addInfoControl() {
+            var info = L.control({position: 'topright'});
+            
+            info.onAdd = function (map) {
+                this._div = L.DomUtil.create('div', 'info');
+                this.update();
+                return this._div;
+            };
+            
+            info.update = function () {
+                const totalCountries = Object.keys(registrationData).length;
+                const totalRegistrations = Object.values(registrationData)
+                    .reduce((sum, country) => sum + country.total, 0);
+                const totalMale = Object.values(registrationData)
+                    .reduce((sum, country) => sum + country.male, 0);
+                const totalFemale = Object.values(registrationData)
+                    .reduce((sum, country) => sum + country.female, 0);
+                
+                this._div.innerHTML = `
+                    <h4>Registration Overview</h4>
+                    <strong>Countries with data:</strong> ${totalCountries}<br/>
+                    <strong>Total registrations:</strong> ${totalRegistrations.toLocaleString()}<br/>
+                    <strong>Male:</strong> ${totalMale.toLocaleString()}<br/>
+                    <strong>Female:</strong> ${totalFemale.toLocaleString()}<br/>
+                    <br/><em>Hover over countries for details</em>
+                `;
+            };
+            
+            info.addTo(map);
+        }
+        
+        // Initialize the visualization
+        loadRegistrationData();
+    </script>
+</body>
+</html>
